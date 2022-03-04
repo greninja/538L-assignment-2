@@ -74,7 +74,6 @@ train_loader = torch.utils.data.DataLoader(
 
 for e in range(epochs):
     for batch_idx, batch in enumerate(train_loader):
-        
         for param in model.parameters():
             param.accumulated_grads = []
         
@@ -92,7 +91,7 @@ for e in range(epochs):
             for param in model.parameters():
                 per_sample_grad = param.grad.detach().clone()
                 clip_grad_norm_(per_sample_grad, max_norm=max_grad_norm)  # in-place
-                param.accumulated_grads.append(per_sample_grad)  
+                param.accumulated_grads.append(per_sample_grad)
             
         # Aggregate back
         for param in model.parameters():
@@ -100,7 +99,9 @@ for e in range(epochs):
 
         # Now we are ready to update and add noise!
         for param in model.parameters():
-            param = param - lr * param.grad
+            param = param - learning_rate * param.grad
             param += torch.normal(mean=0, std=noise_multiplier * max_grad_norm)
             
             param.grad = 0  # Reset for next iteration
+        
+        accountant.step(noise_multiplier=noise_multiplier, sample_rate=sampling_prob)

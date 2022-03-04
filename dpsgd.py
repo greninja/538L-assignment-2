@@ -164,7 +164,6 @@ def main():
 
 main()
 
-
 # NOT NEEDED since you can use Opacus's RDPAccountant.
 # def compute_epsilon(epoch, num_train_eg, args):
 #     """Computes epsilon value for given hyperparameters."""
@@ -180,8 +179,8 @@ main()
 #     # Delta is set to approximate 1 / (number of training points).
 #     return get_privacy_spent(orders, rdp, target_delta=1e-5)[0]
 
-def train():
+# def train():
 
-def test():
+# def test():
 
-def accountant():
+# def accountant():

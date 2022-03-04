@@ -1,6 +1,7 @@
 import time
 import itertools
 import numpy as np
+import jax
 import jax.numpy as jnp
 from jax import grad, jit, vmap, value_and_grad, random
 
@@ -13,6 +14,8 @@ from jax.experimental.stax import (BatchNorm, Conv, Dense, Flatten,
 
 from opacus.accountants import create_accountant
 from opacus.data_loader import DPDataLoader
+
+from jax.tree_util import tree_flatten, tree_multimap, tree_unflatten
 
 from functools import partial
 import torch
@@ -75,6 +78,7 @@ def relu_layer(params, x):
 
 def softmax_loss(model, params, batch):
     inputs, targets = batch
+    inputs = inputs.reshape(1, inputs.shape[0], inputs.shape[1], inputs.shape[2])
     print(inputs.shape)
     logits = model(params, inputs)
     # convert the outputs to one hot shape according to the same shape as
@@ -202,53 +206,46 @@ test_loader = torch.utils.data.DataLoader(
                    ])),
     batch_size=batch_size, shuffle=True, drop_last=True)
 
-# init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
-#                               BatchNorm(), Relu,
-#                               Conv(32, (5, 5), (2, 2), padding="SAME"),
-#                               BatchNorm(), Relu,
-#                               Conv(10, (3, 3), (2, 2), padding="SAME"),
-#                               BatchNorm(), Relu,
-#                               Conv(10, (3, 3), (2, 2), padding="SAME"), Relu,
-#                               Flatten,
-#                               Dense(num_classes),
-#                               LogSoftmax)
-# _, params = init_fun(key, (1, 28, 28))
+init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
+                              BatchNorm(), Relu,
+                              Conv(32, (5, 5), (2, 2), padding="SAME"),
+                              BatchNorm(), Relu,
+                              Conv(10, (3, 3), (2, 2), padding="SAME"),
+                              BatchNorm(), Relu,
+                              Conv(10, (3, 3), (2, 2), padding="SAME"), Relu,
+                              Flatten,
+                              Dense(num_classes),
+                              LogSoftmax)
+_, params = init_fun(key, (1, 1, 28, 28))
 
+# def initialize_mlp(sizes, key):
+#     """ Initialize the weights of all layers of a linear layer network """
+#     keys = random.split(key, len(sizes))
+#     # Initialize a single layer with Gaussian weights -  helper function
+#     def initialize_layer(m, n, key, scale=1e-2):
+#         w_key, b_key = random.split(key)
+#         return scale * random.normal(w_key, (n, m)), scale * random.normal(b_key, (n,))
+#     return [initialize_layer(m, n, k) for m, n, k in zip(sizes[:-1], sizes[1:], keys)]
 
+# layer_sizes = [784, 512, 512, 10]
+# # Return a list of tuples of layer weights
+# params = initialize_mlp(layer_sizes, key)
 
+# def forward_pass(params, in_array):
+#     """ Compute the forward pass for each example individually """
+#     activations = in_array
 
+#     # Loop over the ReLU hidden layers
+#     for w, b in params[:-1]:
+#         activations = relu_layer([w, b], activations)
 
-def initialize_mlp(sizes, key):
-    """ Initialize the weights of all layers of a linear layer network """
-    keys = random.split(key, len(sizes))
-    # Initialize a single layer with Gaussian weights -  helper function
-    def initialize_layer(m, n, key, scale=1e-2):
-        w_key, b_key = random.split(key)
-        return scale * random.normal(w_key, (n, m)), scale * random.normal(b_key, (n,))
-    return [initialize_layer(m, n, k) for m, n, k in zip(sizes[:-1], sizes[1:], keys)]
+#     # Perform final trafo to logits
+#     final_w, final_b = params[-1]
+#     logits = np.dot(final_w, activations) + final_b
+#     return logits - logsumexp(logits)
 
-layer_sizes = [784, 512, 512, 10]
-# Return a list of tuples of layer weights
-params = initialize_mlp(layer_sizes, key)
-
-def forward_pass(params, in_array):
-    """ Compute the forward pass for each example individually """
-    activations = in_array
-
-    # Loop over the ReLU hidden layers
-    for w, b in params[:-1]:
-        activations = relu_layer([w, b], activations)
-
-    # Perform final trafo to logits
-    final_w, final_b = params[-1]
-    logits = np.dot(final_w, activations) + final_b
-    return logits - logsumexp(logits)
-
-# Make a batched version of the `predict` function
-batch_forward = vmap(forward_pass, in_axes=(None, 0), out_axes=0)
-
-
-
+# # Make a batched version of the `predict` function
+# batch_forward = vmap(forward_pass, in_axes=(None, 0), out_axes=0)
 
 step_size = 1e-3
 opt_init, opt_update, get_params = optimizers.adam(step_size)
@@ -273,5 +270,3 @@ for epoch in range(num_epochs):
         batch = (x, y)
         # params, opt_state, loss = private_update(key, i, opt_state, params, x, y)
         opt_state = private_update(key, i, opt_state, batch)
-
-
