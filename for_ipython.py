@@ -31,6 +31,7 @@ num_classes = 10
 
 batch_size = 128 # also lot size
 N = 60000 # total dataset size (for MNIST)
+delta = 1/N
 sampling_prob = batch_size / N
 epochs = 100
 iter_per_epoch = int(N / batch_size)  
@@ -139,14 +140,9 @@ def main(num_epochs, opt_state):
 
     # Get the initial set of parameters
     params = get_params(opt_state)
-
-    # # Get initial accuracy after random init
-    # train_acc = accuracy(params, train_loader)
-    # test_acc = accuracy(params, test_loader)
-    # log_acc_train.append(train_acc)
-    # log_acc_test.append(test_acc)
-
     itercount = itertools.count()
+
+    eps_arr = []
 
     # Loop over the training epochs
     for epoch in range(num_epochs):
@@ -158,18 +154,26 @@ def main(num_epochs, opt_state):
             batch = (x, y)
             # params, opt_state, loss = private_update(key, i, opt_state, params, x, y)
             opt_state = private_update(key, i, opt_state, batch)
+            params = get_params(opt_state)
 
-        # epoch_time = time.time() - start_time
+            # take a step in acountant
+            accountant.step(noise_multiplier=noise_multiplier, sample_rate=sampling_prob)
+
+        eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta)
+        eps_arr.append(eps_till_now)
+
+        epoch_time = time.time() - start_time
         # train_acc = accuracy(params, train_loader)
         # test_acc = accuracy(params, test_loader)
         # log_acc_train.append(train_acc)
         # log_acc_test.append(test_acc)
-        # print("Epoch {} | T: {:0.2f} | Train A: {:0.3f} | Test A: {:0.3f}".format(epoch+1, epoch_time,
-        #                                                             train_acc, test_acc))
-        print("Epoch {} | T: {:0.2f} | Train A: {:0.3f} | Test A: {:0.3f}".format(epoch+1, epoch_time,
-                                                                    train_acc, test_acc))
+        print("Epoch {} | T: {:0.2f} | eps till now: {:0.2f}".format(
+                                                                    epoch+1,
+                                                                    epoch_time,
+                                                                    eps_till_now))
 
-    return train_loss, log_acc_train, log_acc_test
+    # return train_loss, log_acc_train, log_acc_test
+    return eps_arr
 
 # train_loader = torch.utils.data.DataLoader(
 #     datasets.MNIST('./data', train=True, download=True,
@@ -198,7 +202,6 @@ train_loader = torch.utils.data.DataLoader(
                    ])),
     batch_size=batch_size, shuffle=True, drop_last=True)
 
-
 test_loader = torch.utils.data.DataLoader(
     datasets.MNIST('./data', train=False, download=True, transform=transforms.Compose([
                        transforms.ToTensor(),
@@ -216,41 +219,13 @@ init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
                               Flatten,
                               Dense(num_classes),
                               LogSoftmax)
+
 _, params = init_fun(key, (1, 1, 28, 28))
-
-# def initialize_mlp(sizes, key):
-#     """ Initialize the weights of all layers of a linear layer network """
-#     keys = random.split(key, len(sizes))
-#     # Initialize a single layer with Gaussian weights -  helper function
-#     def initialize_layer(m, n, key, scale=1e-2):
-#         w_key, b_key = random.split(key)
-#         return scale * random.normal(w_key, (n, m)), scale * random.normal(b_key, (n,))
-#     return [initialize_layer(m, n, k) for m, n, k in zip(sizes[:-1], sizes[1:], keys)]
-
-# layer_sizes = [784, 512, 512, 10]
-# # Return a list of tuples of layer weights
-# params = initialize_mlp(layer_sizes, key)
-
-# def forward_pass(params, in_array):
-#     """ Compute the forward pass for each example individually """
-#     activations = in_array
-
-#     # Loop over the ReLU hidden layers
-#     for w, b in params[:-1]:
-#         activations = relu_layer([w, b], activations)
-
-#     # Perform final trafo to logits
-#     final_w, final_b = params[-1]
-#     logits = np.dot(final_w, activations) + final_b
-#     return logits - logsumexp(logits)
-
-# # Make a batched version of the `predict` function
-# batch_forward = vmap(forward_pass, in_axes=(None, 0), out_axes=0)
 
 step_size = 1e-3
 opt_init, opt_update, get_params = optimizers.adam(step_size)
 opt_state = opt_init(params)
-num_epochs = 1
+num_epochs = 100
 
 """ Implements a learning loop over epochs. """
 # Initialize placeholder for loggin
@@ -260,13 +235,18 @@ log_acc_train, log_acc_test, train_loss = [], [], []
 params = get_params(opt_state)
 itercount = itertools.count()
 
-# Loop over the training epochs
-for epoch in range(num_epochs):
-    start_time = time.time()
-    for batch_idx, (data, target) in enumerate(train_loader):
-        i = next(itercount) # tracks the current step
-        x = jnp.array(data)
-        y = one_hot(jnp.array(target), num_classes)
-        batch = (x, y)
-        # params, opt_state, loss = private_update(key, i, opt_state, params, x, y)
-        opt_state = private_update(key, i, opt_state, batch)
+eps_arr = main(num_epochs, opt_state)
+x = np.arange(num_epochs)
+plt.plot(x, eps_arr)
+plt.savefig("eps vs epochs")
+
+# # Loop over the training epochs
+# for epoch in range(num_epochs):
+#     start_time = time.time()
+#     for batch_idx, (data, target) in enumerate(train_loader):
+#         i = next(itercount) # tracks the current step
+#         x = jnp.array(data)
+#         y = one_hot(jnp.array(target), num_classes)
+#         batch = (x, y)
+#         # params, opt_state, loss = private_update(key, i, opt_state, params, x, y)
+#         opt_state = private_update(key, i, opt_state, batch)
