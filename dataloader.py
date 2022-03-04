@@ -22,7 +22,25 @@ CIFAR_TEST_TRANSFORM = transforms.Compose([
             transforms.Normalize(_CIFAR10_MEAN, _CIFAR10_STDDEV)
         ])
 
+# MNIST
+_MNIST_MEAN = [0.1307]
+_MNIST_STDDEV = [0.3081]
+
+MNIST_TRAIN_TRANSFORM = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(_MNIST_MEAN, _MNIST_STDDEV)
+        ])
+MNIST_TEST_TRANSFORM = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(_MNIST_MEAN, _MNIST_STDDEV)
+        ])
+
 def get_cifar10_datasets():    
-    train_dataset = datasets.CIFAR10("./data_dir", train=True, download=False, transform=CIFAR_TRAIN_TRANSFORM)
-    test_dataset = datasets.CIFAR10("./data_dir", train=False, download=False, transform=CIFAR_TEST_TRANSFORM)
+    train_dataset = datasets.CIFAR10("./data", train=True, download=False, transform=CIFAR_TRAIN_TRANSFORM)
+    test_dataset = datasets.CIFAR10("./data", train=False, download=False, transform=CIFAR_TEST_TRANSFORM)
     return train_dataset, test_dataset
+
+def get_mnist_datasets():    
+    train_dataset = datasets.MNIST("./data", train=True, download=False, transform=MNIST_TRAIN_TRANSFORM)
+    test_dataset = datasets.MNIST("./data", train=False, download=False, transform=MNIST_TEST_TRANSFORM)
+    return train_dataset, test_dataset    

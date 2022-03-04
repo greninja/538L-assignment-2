@@ -11,7 +11,7 @@ from functools import partial
 from torch.utils.data import DataLoader
 from jax.experimental import optimizers, stax
 
-from dataloader import get_cifar10_datasets
+from dataloader import get_cifar10_datasets, get_mnist_datasets
 import optax
 from opacus.accountants import create_accountant
 from opacus.data_loader import DPDataLoader
@@ -19,13 +19,12 @@ from opacus.data_loader import DPDataLoader
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]= "False"
 rng = jax.random.PRNGKey(0)
-
-batch_size = 128
-L = 128 # lot size
-N = 50000 # total dataset size (for CIFAR10f)
-sampling_prob = L / N
-num_batches = int(N / L) 
+    
+batch_size = 128 # also lot size
+N = 60000 # total dataset size (for MNIST)
+sampling_prob = batch_size / N
 epochs = 100
+iter_per_epoch = int(N / batch_size)  
 learning_rate = 0.01
 
 # accountant creation
@@ -46,6 +45,20 @@ def cifar10_model(input_features):
         hk.Linear(384),
         jax.nn.relu,
         hk.Linear(384)
+    ])(input_features)
+
+def mnist_model(input_features):
+    return hk.Sequential([
+        hk.Conv2D(16, (8, 8), padding='SAME', stride=(2, 2)),
+        jax.nn.relu,
+        hk.MaxPool(2, 1, padding='VALID'),  # matches stax
+        hk.Conv2D(32, (4, 4), padding='VALID', stride=(2, 2)),
+        jax.nn.relu,
+        hk.MaxPool(2, 1, padding='VALID'),  # matches stax
+        hk.Flatten(),
+        hk.Linear(32),
+        jax.nn.relu,
+        hk.Linear(10),
     ])(input_features)
 
 def softmax_loss(model, params, batch):
@@ -89,14 +102,68 @@ def private_grad(model, loss, params, batch, rng, l2_norm_clip, noise_multiplier
     return tree_unflatten(grads_treedef, normalized_noised_aggregated_clipped_grads)
 
 # updating the params of the model
-def private_update(rng, i, opt_state, batch, grad_fn):
+def private_update(rng, i, opt_state, batch):
     params = get_params(opt_state)
     rng = random.fold_in(rng, i)  # get new key for new random numbers
     return opt_update(
         i,
-        grad_fn(model, loss, params, batch, rng, l2_norm_clip, noise_multiplier,
-                batch_size), opt_state
+        private_grad(
+            model, 
+            softmax_loss, 
+            params, 
+            batch, 
+            rng, 
+            l2_norm_clip, 
+            noise_multiplier,
+            batch_size), 
+        opt_state
     )
+
+def main():
+
+    # load data
+    train_dataset, test_dataset = get_mnist_datasets()
+
+    # load train and test loaders
+    train_loader = DPDataLoader(train_dataset, sample_rate=sampling_prob)
+    test_loader = DataLoader(test_dataset, shuffle=False, batch_size=batch_size,
+                             num_workers=4, pin_memory=False)
+
+    x_a, y_b = next(iter(train_loader))
+
+    # train batch to get init params
+    train_batch = x_a.numpy()
+
+    # load model
+    model = hk.transform(mnist_model)
+    init_params = model.init(rng, train_batch)
+    opt_init, opt_update, get_params = optimizers.sgd(learning_rate)
+
+    # define loss
+    loss = softmax_loss
+
+    opt_state = opt_init(init_params)
+    itercount = itertools.count()
+
+    # train function
+    private_update = jit(private_update)
+    # train_fn = private_update
+    # train_fn = jit(train_fn)
+
+    # train loop
+    for epoch in range(1, epochs + 1):
+        for iteration in iter_per_epoch:
+            batch = next(iter(train_loader))
+            batch = batch.numpy()
+            opt_state = private_update(
+                key,
+                next(itercount),
+                opt_state,
+                batch,
+            )
+
+main()
+
 
 # NOT NEEDED since you can use Opacus's RDPAccountant.
 # def compute_epsilon(epoch, num_train_eg, args):
@@ -118,47 +185,3 @@ def train():
 def test():
 
 def accountant():
-
-def main(args):
-
-    # load data
-    train_dataset, test_dataset = get_cifar10_datasets()
-
-    # load train and test loaders
-    train_loader = DataLoader(train_dataset, sample_rate=sampling_prob)
-    # test_loader = DPDataLoader(test_dataset, sample_rate=sampling_prob)
-    test_loader = DataLoader(test_dataset, shuffle=False, batch_size=batch_size,
-                             num_workers=4, pin_memory=False)
-
-    x_a, y_b = next(iter(train_loader))
-
-    # train batch to get init params
-    train_batch = x_a.numpy()
-
-    # load model
-    model = hk.transform(cifar10_model)
-    init_params = model.init(rng, train_batch)
-    opt_init, opt_update, get_params = optimizers.sgd(learning_rate)
-
-    # define loss
-    loss = softmax_loss
-
-    # define private grad function
-    grad_fn = private_grad
-
-    opt_state = opt_init(init_params)
-    itercount = itertools.count()
-    train_fn = private_update
-    train_fn = jit(train_fn)
-
-    # train loop
-    for epoch in range(1, epochs + 1):
-
-        for i, batch in enumerate(data.dataloader(train_data, train_labels, batch_size)):
-            opt_state = train_fn(
-                key,
-                next(itercount),
-                opt_state,
-                batch,
-            )
-
