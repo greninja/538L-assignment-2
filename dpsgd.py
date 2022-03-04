@@ -1,3 +1,4 @@
+import itertools
 import haiku as hk
 import jax
 import jax.numpy as jnp
@@ -8,6 +9,7 @@ from jax.example_libraries import optimizers
 from functools import partial
 
 from torch.utils.data import DataLoader
+from jax.experimental import optimizers, stax
 
 from dataloader import get_cifar10_datasets
 import optax
@@ -21,13 +23,16 @@ rng = jax.random.PRNGKey(0)
 batch_size = 128
 L = 128 # lot size
 N = 50000 # total dataset size (for CIFAR10f)
-sampling_prob = L / N 
+sampling_prob = L / N
+num_batches = int(N / L) 
+epochs = 100
+learning_rate = 0.01
 
 # accountant creation
 accountant = create_accountant("rdp")
 std_dev = 1.0
-max_grad_norm = 1.0 # is equal to C in DPSGD paper
-noise_multiplier = std_dev / max_grad_norm
+l2_norm_clip = 1.0 # is equal to C in DPSGD paper
+noise_multiplier = std_dev / l2_norm_clip
 
 def cifar10_model(input_features):
     return hk.Sequential([
@@ -67,7 +72,7 @@ def clipped_grad(model, loss, params, l2_norm_clip, single_example_batch):
     normalized_nonempty_grads = [g / divisor for g in nonempty_grads]
     return tree_unflatten(tree_def, normalized_nonempty_grads)
 
-def noisy_grad(model, loss, params, batch, rng, l2_norm_clip, noise_multiplier, batch_size):
+def private_grad(model, loss, params, batch, rng, l2_norm_clip, noise_multiplier, batch_size):
     """Return differentially private gradients for params, evaluated on batch."""
     clipped_grads = vmap(partial(clipped_grad, model, loss), (None, None, 0))(params, l2_norm_clip,
                                                                               batch)
@@ -80,17 +85,18 @@ def noisy_grad(model, loss, params, batch, rng, l2_norm_clip, noise_multiplier, 
     ]
     normalized_noised_aggregated_clipped_grads = [
         g / batch_size for g in noised_aggregated_clipped_grads
-    ]  
+    ]
     return tree_unflatten(grads_treedef, normalized_noised_aggregated_clipped_grads)
 
 # updating the params of the model
-def update(rng, i, opt_state, batch):
+def private_update(rng, i, opt_state, batch, grad_fn):
     params = get_params(opt_state)
     rng = random.fold_in(rng, i)  # get new key for new random numbers
     return opt_update(
         i,
-        grad_fn(model, loss, params, batch, rng, args.l2_norm_clip, args.noise_multiplier,
-                args.batch_size), opt_state)
+        grad_fn(model, loss, params, batch, rng, l2_norm_clip, noise_multiplier,
+                batch_size), opt_state
+    )
 
 # NOT NEEDED since you can use Opacus's RDPAccountant.
 # def compute_epsilon(epoch, num_train_eg, args):
@@ -119,31 +125,40 @@ def main(args):
     train_dataset, test_dataset = get_cifar10_datasets()
 
     # load train and test loaders
-    train_loader = DPDataLoader(train_dataset, sample_rate=sampling_prob)
+    train_loader = DataLoader(train_dataset, sample_rate=sampling_prob)
     # test_loader = DPDataLoader(test_dataset, sample_rate=sampling_prob)
     test_loader = DataLoader(test_dataset, shuffle=False, batch_size=batch_size,
                              num_workers=4, pin_memory=False)
 
     x_a, y_b = next(iter(train_loader))
 
-    # for i, batch in enumerate(train_loader): # batch instead of (inputs, targets) for loss function
-    #     break
-
-    # batch = train_dataset.data[:10].astype(np.int32)
+    # train batch to get init params
     train_batch = x_a.numpy()
 
     # load model
     model = hk.transform(cifar10_model)
     init_params = model.init(rng, train_batch)
-    
-    # load optimizer
-    optimizer = optax.sgd(learning_rate)
-    params = {'w': jnp.ones((init_params,))}
-    opt_state = optimizer.init(params)
+    opt_init, opt_update, get_params = optimizers.sgd(learning_rate)
 
     # define loss
     loss = softmax_loss
 
-    # train loop
+    # define private grad function
+    grad_fn = private_grad
 
+    opt_state = opt_init(init_params)
+    itercount = itertools.count()
+    train_fn = private_update
+    train_fn = jit(train_fn)
+
+    # train loop
+    for epoch in range(1, epochs + 1):
+
+        for i, batch in enumerate(data.dataloader(train_data, train_labels, batch_size)):
+            opt_state = train_fn(
+                key,
+                next(itercount),
+                opt_state,
+                batch,
+            )
 

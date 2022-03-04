@@ -9,6 +9,8 @@ from functools import partial
 
 from torch.utils.data import DataLoader
 
+from jax.experimental import optimizers, stax
+
 from dataloader import get_cifar10_datasets
 import optax
 from opacus.accountants import create_accountant
@@ -43,6 +45,20 @@ def cifar10_model(input_features):
         hk.Linear(384)
     ])(input_features)
 
+def mnist_model(input_features):
+    return hk.Sequential([
+        hk.Conv2D(16, (8, 8), padding='SAME', stride=(2, 2)),
+        jax.nn.relu,
+        hk.MaxPool(2, 1, padding='VALID'),  # matches stax
+        hk.Conv2D(32, (4, 4), padding='VALID', stride=(2, 2)),
+        jax.nn.relu,
+        hk.MaxPool(2, 1, padding='VALID'),  # matches stax
+        hk.Flatten(),
+        hk.Linear(32),
+        jax.nn.relu,
+        hk.Linear(10),
+    ])(input_features)
+
 # load data
 train_dataset, test_dataset = get_cifar10_datasets()
 
@@ -63,3 +79,6 @@ train_batch = x_a.numpy()
 # load model
 model = hk.transform(cifar10_model)
 init_params = model.init(rng, train_batch)
+
+
+
