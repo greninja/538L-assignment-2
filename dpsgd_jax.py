@@ -63,12 +63,6 @@ def private_update(key, i, opt_state, batch):
         opt_state
     )
 
-
-def softmax_loss(logits, targets):
-    one_hot = jax.nn.one_hot(targets, logits.shape[-1])
-    logits = stax.logsoftmax(logits)  # log normalize
-    return -jnp.mean(jnp.sum(logits * one_hot, axis=-1))  # cross entropy loss
-
 # MNIST
 _MNIST_MEAN = [0.1307]
 _MNIST_STDDEV = [0.3081]
@@ -122,21 +116,25 @@ itercount = itertools.count()
 
 eps_arr = []
 
+def softmax_loss(model, params, batch):
+    inputs, targets = batch
+    logits = model(params, inputs)
+    one_hot = jax.nn.one_hot(targets, logits.shape[-1])
+    logits = stax.logsoftmax(logits)  # log normalize
+    return -jnp.sum(logits * one_hot, axis=-1)  # cross entropy loss
+
 # Loop over the training epochs
 for epoch in range(num_epochs):
     start_time = time.time()
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         i = next(itercount) # tracks the current step
         inputs = jnp.array(inputs)
-    
-        # compute logits
-        logits = model(params, inputs)
-    
-        # compute loss
-        loss = softmax_loss(logits, targets)
+        batch = (inputs, targets)
 
-
-        opt_state = private_update(key, i, opt_state, batch)
+        # setting the loss function
+        
+        opt_state = private_update(model, loss, key, i, opt_state, batch)
+        params = get_params(opt_state)
 
 def clipped_grad(model, loss, params, l2_norm_clip, single_example_batch):
     """Evaluate gradient for a single-example batch and clip its grad norm."""
