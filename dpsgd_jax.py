@@ -71,11 +71,8 @@ def compute_private_grad(model, loss_fn, params, batch, key, l2_norm_bound, nois
     aggregated_clipped_grads = [g.sum(0) for g in clipped_grads_flat]
     keys = random.split(key, len(aggregated_clipped_grads))
     noised_aggregated_clipped_grads = [g + l2_norm_bound * noise_multiplier * random.normal(r, g.shape)
-        for r, g in zip(keys, aggregated_clipped_grads)
-    ]
-    normalized_noised_aggregated_clipped_grads = [
-        g / batch_size for g in noised_aggregated_clipped_grads
-    ]
+                                         for r, g in zip(keys, aggregated_clipped_grads)]
+    normalized_noised_aggregated_clipped_grads = [g / batch_size for g in noised_aggregated_clipped_grads]
     return tree_unflatten(grads_treedef, normalized_noised_aggregated_clipped_grads)
 
 # HYPERPARAMS

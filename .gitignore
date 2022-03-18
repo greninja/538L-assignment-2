@@ -1,5 +1,2 @@
-.gitignore
 data_dir/
 data/
-for_ipython.py
-dpsgd_pytorch.py
