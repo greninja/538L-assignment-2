@@ -5,7 +5,8 @@ import numpy as np
 import jax.numpy as jnp
 from jax import grad, jit, vmap, value_and_grad, random
 
-from jax.tree_util import Partial 
+# from jax.tree_util import Partial
+from functools import partial 
 
 # Import some additional JAX and dataloader helpers
 from jax.scipy.special import logsumexp
@@ -22,8 +23,25 @@ from jax.tree_util import tree_flatten, tree_multimap, tree_unflatten
 import torch
 from torchvision import datasets, transforms
 
+import matplotlib.pyplot as plt 
+import seaborn as sns
+# sns.set()
+sns.set_theme(style="whitegrid", palette="pastel")
+
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
+
+def compute_test_accuracy(model, params, test_loader):
+    correct = 0
+    total = 0
+    for (inputs, targets) in test_loader:
+        inputs = jnp.array(inputs)
+        targets = jnp.array(targets)  
+        predicted_class = jnp.argmax(model(params, inputs), axis=1)
+    
+        correct += jnp.sum(predicted_class == targets)
+        total += len(targets)
+    return (correct/total) * 100
 
 def softmax_loss(model, params, batch):
     inputs, targets = batch
@@ -34,7 +52,7 @@ def softmax_loss(model, params, batch):
 
 def gradient_clipping(model, loss_fn, params, l2_norm_bound, per_example_batch):
     """Compute gradient for a single example and clip its norm to 'l2_norm_bound' 
-    (Note the single example batch is automatically generated via vmap function"""
+    (Note the single example batch is automatically generated via vmap function)"""
 
     reshaped_input = jnp.expand_dims(per_example_batch[0], axis=1)
     target = per_example_batch[1]
@@ -51,11 +69,11 @@ def gradient_clipping(model, loss_fn, params, l2_norm_bound, per_example_batch):
 
     clipped_grad = []
     for i in grads:
-        u = []
+        u = tuple()
         if len(i) > 0:
             for j in i:
                 j/=scale_factor
-                u.append(j)
+                u += (j,)
         clipped_grad.append(u)
 
     return clipped_grad
@@ -65,8 +83,8 @@ def compute_private_grad(model, loss_fn, params, batch, key, l2_norm_bound, nois
 
     # vmap function
     clipped_grads = vmap(gradient_clipping,
-                        in_axes=(None, None, None, None, 0),
-                        out_axes=0)(model, loss_fn, params, l2_norm_bound, batch)
+                         in_axes=(None, None, None, None, 0),
+                         out_axes=0)(model, loss_fn, params, l2_norm_bound, batch)
     clipped_grads_flat, grads_treedef = tree_flatten(clipped_grads)
     aggregated_clipped_grads = [g.sum(0) for g in clipped_grads_flat]
     keys = random.split(key, len(aggregated_clipped_grads))
@@ -74,6 +92,19 @@ def compute_private_grad(model, loss_fn, params, batch, key, l2_norm_bound, nois
                                          for r, g in zip(keys, aggregated_clipped_grads)]
     normalized_noised_aggregated_clipped_grads = [g / batch_size for g in noised_aggregated_clipped_grads]
     return tree_unflatten(grads_treedef, normalized_noised_aggregated_clipped_grads)
+
+def dpsgd_grad_step(key, iteration, opt_state, batch):
+    params = get_params(opt_state)
+    rng = random.fold_in(key, i)
+    clipped_noisy_grads = compute_private_grad(model, 
+                             softmax_loss, 
+                             params, 
+                             batch, 
+                             rng,
+                             l2_norm_bound, 
+                             noise_multiplier, 
+                             batch_size)
+    return opt_update(i, clipped_noisy_grads, opt_state)
 
 # HYPERPARAMS
 # Generate key which is used to generate random numbers
@@ -119,7 +150,7 @@ test_loader = torch.utils.data.DataLoader(
                        transforms.ToTensor(),
                        transforms.Normalize(_MNIST_MEAN, _MNIST_STDDEV)
                    ])),
-    batch_size=batch_size, shuffle=True, drop_last=True)
+    batch_size=100, shuffle=True, drop_last=True)
 
 # conv_net model
 init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
@@ -138,53 +169,53 @@ _, params = init_fun(key, (1, 1, 28, 28))
 opt_init, opt_update, get_params = optimizers.adam(step_size)
 opt_state = opt_init(params)
 
-""" Implements a learning loop over epochs. """
-# Initialize placeholder for loggin
-log_acc_train, log_acc_test, train_loss = [], [], []
-
 # Get the initial set of parameters
 params = get_params(opt_state)
 itercount = itertools.count()
 
+# arrays for storing data required for plotting
 eps_arr = []
+epoch_grad_norm = []
+test_acc = []
+
+jitted_grad_step = jit(dpsgd_grad_step)
 
 # Main loop
-for epoch in range(num_epochs):
+for epoch in range(1, num_epochs+1):
     start_time = time.time()
+    current_epoch_gn = 0
+
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         i = next(itercount) # tracks the current step
-        key = random.fold_in(key, i)  # get new key for new random numbers
 
         inputs = jnp.array(inputs)
         targets = jnp.array(targets)
         batch = (inputs, targets)
 
-        # setting the loss function
-        clipped_noisy_grads = jit(compute_private_grad(model, 
-                                                       softmax_loss, 
-                                                       params, 
-                                                       batch,
-                                                       key, 
-                                                       l2_norm_bound, 
-                                                       noise_multiplier, 
-                                                       batch_size))
-        opt_state = opt_update(i, clipped_noisy_grads, opt_state)
+        # take a private gradient step and get the new optimizer step
+        opt_state = jitted_grad_step(key, i, opt_state, batch)
+
+        # get updated model params
         params = get_params(opt_state)
 
         # take a step for acountant and measure privacy spent
         accountant.step(noise_multiplier=noise_multiplier, sample_rate=sampling_prob)
         eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta)
         eps_arr.append(eps_till_now)
+    
+        print("eps till now {:0.3f}".format(eps_till_now))
 
+    epoch_grad_norm.append(current_epoch_gn)
+    epoch_test_accuracy = compute_test_accuracy(model, params, test_loader)
+    test_acc.append(epoch_test_accuracy)
 
-eps_arr = main(num_epochs, opt_state)
-x = np.arange(num_epochs)
-plt.plot(x, eps_arr)
-plt.savefig("eps vs epochs")
-print("Epoch {} | T: {:0.2f} | eps till now: {:0.2f}".format(
-                                                            epoch+1,
-                                                            epoch_time,
-                                                            eps_till_now))
+    print("Epoch {} | epoch grad norm {:0.3f} | test accuracy {:0.2f}".format(
+           epoch, current_epoch_gn, epoch_test_accuracy))    
+
+# # PLOTTING CODE
+# x = np.arange(num_epochs)
+# plt.plot(x, eps_arr)
+# plt.savefig("eps vs steps")
 
 # LIST OF PLOTS:
 # - (unclipped) gradient plots
