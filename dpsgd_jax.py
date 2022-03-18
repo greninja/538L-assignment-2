@@ -26,25 +26,39 @@ import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
 
 def softmax_loss(model, params, batch):
-    inputs, targets = batch 
+    inputs, targets = batch
     logits = model(params, inputs)
     one_hot = jax.nn.one_hot(targets, logits.shape[-1])
     logits = stax.logsoftmax(logits)  # log normalize
     return -jnp.mean(jnp.sum(logits * one_hot, axis=-1))  # cross entropy loss
 
-def gradient_clipping(model, loss_fn, params, l2_norm_bound, single_example_batch):
+def gradient_clipping(model, loss_fn, params, l2_norm_bound, per_example_batch):
     """Compute gradient for a single example and clip its norm to 'l2_norm_bound' 
     (Note the single example batch is automatically generated via vmap function"""
 
-    reshaped_input = jnp.expand_dims(single_example_batch[0], axis=1)
-    target = single_example_batch[1]
+    reshaped_input = jnp.expand_dims(per_example_batch[0], axis=1)
+    target = per_example_batch[1]
     reshaped_batch = (reshaped_input, target)
     grads = grad(loss_fn, argnums=1)(model, params, reshaped_batch)
-    nonempty_grads, tree_def = tree_flatten(grads)
-    total_grad_norm = jnp.linalg.norm([jnp.linalg.norm(neg.ravel()) for neg in nonempty_grads])
-    divisor = jnp.maximum(total_grad_norm / l2_norm_bound, 1.)
-    normalized_nonempty_grads = [g / divisor for g in nonempty_grads]
-    return tree_unflatten(tree_def, normalized_nonempty_grads)
+
+    grad_sq_sum = 0
+    for i in grads:
+        for j in i:
+            grad_sq_sum += jnp.sum(jnp.square(j.ravel()))
+    total_grad_norm = jnp.sqrt(grad_sq_sum)
+
+    scale_factor = jnp.maximum(total_grad_norm / l2_norm_bound, 1.)
+
+    clipped_grad = []
+    for i in grads:
+        u = []
+        if len(i) > 0:
+            for j in i:
+                j/=scale_factor
+                u.append(j)
+        clipped_grad.append(u)
+
+    return clipped_grad
 
 def compute_private_grad(model, loss_fn, params, batch, key, l2_norm_bound, noise_multiplier, batch_size):
     """Return differentially private gradients for params, evaluated on batch."""
@@ -56,8 +70,7 @@ def compute_private_grad(model, loss_fn, params, batch, key, l2_norm_bound, nois
     clipped_grads_flat, grads_treedef = tree_flatten(clipped_grads)
     aggregated_clipped_grads = [g.sum(0) for g in clipped_grads_flat]
     keys = random.split(key, len(aggregated_clipped_grads))
-    noised_aggregated_clipped_grads = [
-        g + l2_norm_bound * noise_multiplier * random.normal(r, g.shape)
+    noised_aggregated_clipped_grads = [g + l2_norm_bound * noise_multiplier * random.normal(r, g.shape)
         for r, g in zip(keys, aggregated_clipped_grads)
     ]
     normalized_noised_aggregated_clipped_grads = [
@@ -75,7 +88,7 @@ N = 60000 # total dataset size (for MNIST)
 delta = 1/N
 sampling_prob = batch_size / N
 num_epochs = 1
-iter_per_epoch = int(N / batch_size)  
+iter_per_epoch = int(N / batch_size)
 learning_rate = 0.01
 
 # accountant creation
