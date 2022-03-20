@@ -76,35 +76,40 @@ def gradient_clipping(model, loss_fn, params, l2_norm_bound, per_example_batch):
                 u += (j,)
         clipped_grad.append(u)
 
-    return clipped_grad
+    return clipped_grad, total_grad_norm
 
-def compute_private_grad(model, loss_fn, params, batch, key, l2_norm_bound, noise_multiplier, batch_size):
+def compute_private_gradients(model, loss_fn, params, batch, key, l2_norm_bound, noise_multiplier, batch_size):
     """Return differentially private gradients for params, evaluated on batch."""
 
     # vmap function
-    clipped_grads = vmap(gradient_clipping,
+    clipped_grads, batch_grad_norms = vmap(gradient_clipping,
                          in_axes=(None, None, None, None, 0),
                          out_axes=0)(model, loss_fn, params, l2_norm_bound, batch)
     clipped_grads_flat, grads_treedef = tree_flatten(clipped_grads)
-    aggregated_clipped_grads = [g.sum(0) for g in clipped_grads_flat]
-    keys = random.split(key, len(aggregated_clipped_grads))
-    noised_aggregated_clipped_grads = [g + l2_norm_bound * noise_multiplier * random.normal(r, g.shape)
-                                         for r, g in zip(keys, aggregated_clipped_grads)]
-    normalized_noised_aggregated_clipped_grads = [g / batch_size for g in noised_aggregated_clipped_grads]
-    return tree_unflatten(grads_treedef, normalized_noised_aggregated_clipped_grads)
+    summed_grads = [g.sum(0) for g in clipped_grads_flat]
+    
+    # get keys for each draw of random noise
+    keys = random.split(key, len(summed_grads))
+    
+    noised_summed_clipped_grads = [g + (l2_norm_bound * noise_multiplier * random.normal(r, g.shape))
+                                         for r, g in zip(keys, summed_grads)]
+    averaged_noisy_grads = [g / batch_size for g in noised_summed_clipped_grads]
+    averaged_noisy_clipped_grads = tree_unflatten(grads_treedef, averaged_noisy_grads)
+    return averaged_noisy_clipped_grads, batch_grad_norms
 
-def dpsgd_grad_step(key, iteration, opt_state, batch):
+def dpsgd_update_step(key, iteration, opt_state, batch):
     params = get_params(opt_state)
     rng = random.fold_in(key, i)
-    clipped_noisy_grads = compute_private_grad(model, 
-                             softmax_loss, 
-                             params, 
-                             batch, 
-                             rng,
-                             l2_norm_bound, 
-                             noise_multiplier, 
-                             batch_size)
-    return opt_update(i, clipped_noisy_grads, opt_state)
+    averaged_noisy_clipped_grads, batch_grad_norms = compute_private_gradients(model, 
+                                                                               softmax_loss,
+                                                                               params,
+                                                                               batch, 
+                                                                               rng,
+                                                                               l2_norm_bound,
+                                                                               noise_multiplier,
+                                                                               batch_size)
+    next_opt_state = opt_update(i, averaged_noisy_clipped_grads, opt_state)
+    return next_opt_state, batch_grad_norms
 
 # HYPERPARAMS
 # Generate key which is used to generate random numbers
@@ -115,7 +120,7 @@ batch_size = 128 # also lot size
 N = 60000 # total dataset size (for MNIST)
 delta = 1/N
 sampling_prob = batch_size / N
-num_epochs = 1
+num_epochs = 5
 iter_per_epoch = int(N / batch_size)
 learning_rate = 0.01
 
@@ -152,7 +157,7 @@ test_loader = torch.utils.data.DataLoader(
                    ])),
     batch_size=100, shuffle=True, drop_last=True)
 
-# conv_net model
+# Conv Net model
 init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
                               BatchNorm(), Relu,
                               Conv(32, (5, 5), (2, 2), padding="SAME"),
@@ -164,6 +169,7 @@ init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
                               Dense(num_classes),
                               LogSoftmax)
 
+# batch dim is set to 1 since we'll be passing an example at a time to get per-example gradients 
 _, params = init_fun(key, (1, 1, 28, 28))
 
 opt_init, opt_update, get_params = optimizers.adam(step_size)
@@ -175,15 +181,15 @@ itercount = itertools.count()
 
 # arrays for storing data required for plotting
 eps_arr = []
-epoch_grad_norm = []
-test_acc = []
+epoch_avg_gn_arr = []
+test_acc_arr = []
 
-jitted_grad_step = jit(dpsgd_grad_step)
+jitted_update_step = jit(dpsgd_update_step)
 
 # Main loop
 for epoch in range(1, num_epochs+1):
     start_time = time.time()
-    current_epoch_gn = 0
+    epoch_average_gn = 0
 
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         i = next(itercount) # tracks the current step
@@ -192,8 +198,9 @@ for epoch in range(1, num_epochs+1):
         targets = jnp.array(targets)
         batch = (inputs, targets)
 
-        # take a private gradient step and get the new optimizer step
-        opt_state = jitted_grad_step(key, i, opt_state, batch)
+        # take a private gradient step and get the updated optimizer state and batch gradient norms
+        opt_state, batch_grad_norms = jitted_update_step(key, i, opt_state, batch)
+        epoch_average_gn += jnp.sum(batch_grad_norms)
 
         # get updated model params
         params = get_params(opt_state)
@@ -203,14 +210,15 @@ for epoch in range(1, num_epochs+1):
         eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta)
         eps_arr.append(eps_till_now)
     
-        print("eps till now {:0.3f}".format(eps_till_now))
+        print("eps till now {:0.5f}".format(eps_till_now))
 
-    epoch_grad_norm.append(current_epoch_gn)
+    epoch_average_gn /= N
+    epoch_avg_gn_arr.append(epoch_average_gn)
     epoch_test_accuracy = compute_test_accuracy(model, params, test_loader)
-    test_acc.append(epoch_test_accuracy)
+    test_acc_arr.append(epoch_test_accuracy)
 
-    print("Epoch {} | epoch grad norm {:0.3f} | test accuracy {:0.2f}".format(
-           epoch, current_epoch_gn, epoch_test_accuracy))    
+    print("Epoch {} | eps spent till now {:0.5f} | epoch grad norm {:0.3f} | test accuracy {:0.2f}".format(
+           epoch, eps_till_now, epoch_average_gn, epoch_test_accuracy))    
 
 # # PLOTTING CODE
 # x = np.arange(num_epochs)
