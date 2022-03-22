@@ -17,11 +17,13 @@ from jax.example_libraries.stax import (BatchNorm, Conv, Dense, Flatten, Relu, L
 # for privacy accounting
 from opacus.accountants import create_accountant
 from opacus.data_loader import DPDataLoader
+from opacus.accountants.analysis import rdp as privacy_analysis
 
 from jax.tree_util import tree_flatten, tree_multimap, tree_unflatten
 
 import torch
 from torchvision import datasets, transforms
+from typing import List, Tuple, Union
 
 import matplotlib.pyplot as plt 
 import seaborn as sns
@@ -30,6 +32,22 @@ sns.set_theme(style="whitegrid", palette="pastel")
 
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
+
+def get_epsilon_spent_for_every_alpha(orders: Union[List[float], float], 
+                                      rdp: Union[List[float], float], 
+                                      delta: float) -> Tuple[List[float], float]:
+
+    orders_vec = np.atleast_1d(orders)
+    rdp_vec = np.atleast_1d(rdp)
+
+    eps_arr = (
+        rdp_vec
+        - (np.log(delta) + np.log(orders_vec)) / (orders_vec - 1)
+        + np.log((orders_vec - 1) / orders_vec)
+    )
+    idx_opt = np.nanargmin(eps_arr)  # Ignore NaNs
+    # return eps[idx_opt], orders_vec[idx_opt]
+    return eps_arr, orders_vec[idx_opt]
 
 def compute_test_accuracy(model, params, test_loader):
     correct = 0
@@ -119,7 +137,7 @@ num_classes = 10
 batch_size = 128 # also lot size
 N = 60000 # total dataset size (for MNIST)
 delta = 1/N
-sampling_prob = batch_size / N
+sample_rate = batch_size / N
 num_epochs = 5
 iter_per_epoch = int(N / batch_size)
 learning_rate = 0.01
@@ -131,6 +149,9 @@ l2_norm_bound = 1.0 # is equal to C in DPSGD paper
 noise_multiplier = std_dev / l2_norm_bound
 step_size = 1e-3
 
+# alphas for RDP
+alphas = range(2,33)
+
 # MNIST
 _MNIST_MEAN = [0.1307]
 _MNIST_STDDEV = [0.3081]
@@ -141,7 +162,7 @@ MNIST_TRAIN_TRANSFORM = transforms.Compose([
         ])
 
 train_dataset = datasets.MNIST("./data", train=True, download=False, transform=MNIST_TRAIN_TRANSFORM)
-train_loader = DPDataLoader(train_dataset, sample_rate=sampling_prob)
+train_loader = DPDataLoader(train_dataset, sample_rate=sample_rate)
 
 train_loader = torch.utils.data.DataLoader(
     datasets.MNIST('./data', train=False, download=True, transform=transforms.Compose([
@@ -186,6 +207,8 @@ test_acc_arr = []
 
 jitted_update_step = jit(dpsgd_update_step)
 
+rdp = np.zeros_like(alphas, dtype=float)
+
 # Main loop
 for epoch in range(1, num_epochs+1):
     start_time = time.time()
@@ -205,11 +228,20 @@ for epoch in range(1, num_epochs+1):
         # get updated model params
         params = get_params(opt_state)
 
-        # take a step for acountant and measure privacy spent
-        accountant.step(noise_multiplier=noise_multiplier, sample_rate=sampling_prob)
-        eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta)
-        eps_arr.append(eps_till_now)
+        # # take a step for acountant and measure privacy spent
+        # accountant.step(noise_multiplier=noise_multiplier, sample_rate=sample_rate)
+        # eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta)
+        # eps_arr.append(eps_till_now)
     
+        rdp += privacy_analysis.compute_rdp(q=sample_rate, 
+                                            noise_multiplier=noise_multiplier,
+                                            steps=i,
+                                            orders=alphas)
+
+        eps_arr, best_alpha = get_epsilon_spent_for_every_alpha(orders=alphas,
+                                                                rdp=rdp,
+                                                                delta=delta)
+
         print("eps till now {:0.5f}".format(eps_till_now))
 
     epoch_average_gn /= N
