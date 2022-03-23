@@ -27,13 +27,13 @@ from typing import List, Tuple, Union
 
 import matplotlib.pyplot as plt 
 import seaborn as sns
-# sns.set()
-sns.set_theme(style="whitegrid", palette="pastel")
+sns.set_theme()
+# sns.set_theme(style="whitegrid", palette="pastel")
 
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
 
-def get_epsilon_spent_for_every_alpha(orders: Union[List[float], float], 
+def get_privacy_spent_for_every_alpha(orders: Union[List[float], float], 
                                       rdp: Union[List[float], float], 
                                       delta: float) -> Tuple[List[float], float]:
 
@@ -47,7 +47,7 @@ def get_epsilon_spent_for_every_alpha(orders: Union[List[float], float],
     )
     idx_opt = np.nanargmin(eps_arr)  # Ignore NaNs
     # return eps[idx_opt], orders_vec[idx_opt]
-    return eps_arr, orders_vec[idx_opt]
+    return eps_arr, idx_opt
 
 def compute_test_accuracy(model, params, test_loader):
     correct = 0
@@ -201,9 +201,11 @@ params = get_params(opt_state)
 itercount = itertools.count()
 
 # arrays for storing data required for plotting
-eps_arr = []
+eps_spent_arr = []
 epoch_avg_gn_arr = []
-test_acc_arr = []
+eps_alpha_arr = []
+best_alpha_arr = []
+# test_acc_arr = []
 
 jitted_update_step = jit(dpsgd_update_step)
 
@@ -238,26 +240,51 @@ for epoch in range(1, num_epochs+1):
                                             steps=i,
                                             orders=alphas)
 
-        eps_arr, best_alpha = get_epsilon_spent_for_every_alpha(orders=alphas,
+        eps_arr, idx_opt = get_privacy_spent_for_every_alpha(orders=alphas,
                                                                 rdp=rdp,
                                                                 delta=delta)
 
-        print("eps till now {:0.5f}".format(eps_till_now))
+        best_alpha = alphas[idx_opt]
+        eps_till_now = eps_arr[idx_opt]
+        eps_spent_arr.append(eps_till_now)
+
+        print("Best alpha {}".format(best_alpha))
+        print("eps for best alpha {:0.5f}".format(eps_till_now))
+
+    if epoch % 10 == 0:
+        eps_alpha_arr.append(eps_arr)
 
     epoch_average_gn /= N
     epoch_avg_gn_arr.append(epoch_average_gn)
-    epoch_test_accuracy = compute_test_accuracy(model, params, test_loader)
-    test_acc_arr.append(epoch_test_accuracy)
+    best_alpha_arr.append(best_alpha)
 
+    epoch_test_accuracy = compute_test_accuracy(model, params, test_loader)
     print("Epoch {} | eps spent till now {:0.5f} | epoch grad norm {:0.3f} | test accuracy {:0.2f}".format(
            epoch, eps_till_now, epoch_average_gn, epoch_test_accuracy))    
 
-# # PLOTTING CODE
-# x = np.arange(num_epochs)
-# plt.plot(x, eps_arr)
-# plt.savefig("eps vs steps")
 
-# LIST OF PLOTS:
-# - (unclipped) gradient plots
-# - eps vs iterations/steps
-# - alpha order RDP
+# Plotting
+
+# Plot 1 - epochs vs average_grad_norm
+plt.figure(0)
+x = np.arange(1, num_epochs+1)
+plt.plot(x, epoch_avg_gn_arr)
+plt.savefig(os.path.join("plots", "epochs_vs_avg_gn.png"))
+
+# Plot 2 - iterations vs eps spent (for best alpha)
+plt.figure(1)
+x = np.arange(len(eps_spent_arr))
+plt.plot(x, eps_spent_arr)
+plt.savefig(os.path.join("plots", "iterations_vs_eps_spent.png"))
+
+# Plot 3 - alphas vs eps spent (for final iteration and some iterations in the middle)
+plt.figure(2)
+lineObjects = plt.plot(alphas, *eps_alpha_arr)
+plt.legend(iter(lineObjects), ('epoch 10', 'epoch 20', 'epoch 30', 'epoch 40', 'epoch 50',
+                               'epoch 60', 'epoch 70', 'epoch 80', 'epoch 90', 'epoch 100'))
+
+# Plot 4 - epochs vs best alpha
+plt.figure(3)
+x = np.arange(1, num_epochs+1)
+plt.plot(x, best_alpha_arr)
+plt.savefig(os.path.join("plots", "best_alpha_arr.png"))
