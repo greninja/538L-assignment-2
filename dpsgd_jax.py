@@ -46,7 +46,6 @@ def get_privacy_spent_for_every_alpha(orders: Union[List[float], float],
         + np.log((orders_vec - 1) / orders_vec)
     )
     idx_opt = np.nanargmin(eps_arr)  # Ignore NaNs
-    # return eps[idx_opt], orders_vec[idx_opt]
     return eps_arr, idx_opt
 
 def compute_test_accuracy(model, params, test_loader):
@@ -138,12 +137,11 @@ batch_size = 128 # also lot size
 N = 60000 # total dataset size (for MNIST)
 delta = 1/N
 sample_rate = batch_size / N
-num_epochs = 5
-iter_per_epoch = int(N / batch_size)
+num_epochs = 20
 learning_rate = 0.01
 
 # accountant creation
-accountant = create_accountant("rdp")
+# accountant = create_accountant("rdp")
 std_dev = 1.0
 l2_norm_bound = 1.0 # is equal to C in DPSGD paper
 noise_multiplier = std_dev / l2_norm_bound
@@ -151,6 +149,7 @@ step_size = 1e-3
 
 # alphas for RDP
 alphas = range(2,33)
+# alphas = [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
 
 # MNIST
 _MNIST_MEAN = [0.1307]
@@ -193,7 +192,7 @@ init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
 # batch dim is set to 1 since we'll be passing an example at a time to get per-example gradients 
 _, params = init_fun(key, (1, 1, 28, 28))
 
-opt_init, opt_update, get_params = optimizers.adam(step_size)
+opt_init, opt_update, get_params = optimizers.sgd(step_size) # changed from "adam" to "sgd"
 opt_state = opt_init(params)
 
 # Get the initial set of parameters
@@ -205,7 +204,6 @@ eps_spent_arr = []
 epoch_avg_gn_arr = []
 eps_alpha_arr = []
 best_alpha_arr = []
-# test_acc_arr = []
 
 jitted_update_step = jit(dpsgd_update_step)
 
@@ -234,15 +232,16 @@ for epoch in range(1, num_epochs+1):
         # accountant.step(noise_multiplier=noise_multiplier, sample_rate=sample_rate)
         # eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta)
         # eps_arr.append(eps_till_now)
-    
+
+        # manual privacy accounting
         rdp += privacy_analysis.compute_rdp(q=sample_rate, 
                                             noise_multiplier=noise_multiplier,
                                             steps=i,
                                             orders=alphas)
 
         eps_arr, idx_opt = get_privacy_spent_for_every_alpha(orders=alphas,
-                                                                rdp=rdp,
-                                                                delta=delta)
+                                                             rdp=rdp,
+                                                             delta=delta)
 
         best_alpha = alphas[idx_opt]
         eps_till_now = eps_arr[idx_opt]
@@ -262,29 +261,56 @@ for epoch in range(1, num_epochs+1):
     print("Epoch {} | eps spent till now {:0.5f} | epoch grad norm {:0.3f} | test accuracy {:0.2f}".format(
            epoch, eps_till_now, epoch_average_gn, epoch_test_accuracy))    
 
-
+#------------
 # Plotting
+#------------
+font = {'weight' : 'bold',
+        'size'   : 20}
+
+import matplotlib
+matplotlib.rc('font', **font)
+
+fig, axs = plt.subplots(2, 2)
 
 # Plot 1 - epochs vs average_grad_norm
-plt.figure(0)
 x = np.arange(1, num_epochs+1)
-plt.plot(x, epoch_avg_gn_arr)
-plt.savefig(os.path.join("plots", "epochs_vs_avg_gn.png"))
+axs[0, 0].plot(x, epoch_avg_gn_arr)
+axs[0, 0].set_title('Epochs vs avg gradient norm')
+axs[0, 0].set_xlabel('Epochs')
+axs[0, 0].set_ylabel('Gradient norm')
 
 # Plot 2 - iterations vs eps spent (for best alpha)
-plt.figure(1)
 x = np.arange(len(eps_spent_arr))
-plt.plot(x, eps_spent_arr)
-plt.savefig(os.path.join("plots", "iterations_vs_eps_spent.png"))
+axs[0, 1].plot(x, eps_spent_arr)
+axs[0, 1].set_title('Iterations vs eps spent (for best alpha)')
+axs[0, 1].set_xlabel('Iterations')
+axs[0, 1].set_ylabel('eps')
 
-# Plot 3 - alphas vs eps spent (for final iteration and some iterations in the middle)
-plt.figure(2)
-lineObjects = plt.plot(alphas, *eps_alpha_arr)
-plt.legend(iter(lineObjects), ('epoch 10', 'epoch 20', 'epoch 30', 'epoch 40', 'epoch 50',
-                               'epoch 60', 'epoch 70', 'epoch 80', 'epoch 90', 'epoch 100'))
+# Plot 3 - alphas vs eps spent (plotted for every 10th iteration)
+lineObjects = axs[1, 0].plot(alphas, *eps_alpha_arr)
+axs[1, 0].set_title('alphas vs eps (for each alpha)')
+axs[1, 0].set_xlabel('alphas')
+axs[1, 0].set_ylabel('eps')
+axs[1, 0].legend(iter(lineObjects), ('epoch 10', 
+                                     'epoch 20'))
+                                     # 'epoch 30', 
+                                     # 'epoch 40', 
+                                     # 'epoch 50',
+                                     # 'epoch 60', 
+                                     # 'epoch 70', 
+                                     # 'epoch 80', 
+                                     # 'epoch 90', 
+                                     # 'epoch 100'))
 
 # Plot 4 - epochs vs best alpha
-plt.figure(3)
 x = np.arange(1, num_epochs+1)
-plt.plot(x, best_alpha_arr)
-plt.savefig(os.path.join("plots", "best_alpha_arr.png"))
+axs[1, 1].plot(x, best_alpha_arr)
+axs[1, 1].set_title('epochs vs best alpha')
+axs[1, 1].set_xlabel('epochs')
+axs[1, 1].set_ylabel('alpha (best)')
+
+# save the plot
+fig.tight_layout()
+fig.set_figheight(13)
+fig.set_figwidth(13)
+fig.savefig(os.path.join("plots", "all_plots.png"))
