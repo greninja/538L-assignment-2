@@ -137,7 +137,7 @@ batch_size = 128 # also lot size
 N = 60000 # total dataset size (for MNIST)
 delta = 1/N
 sample_rate = batch_size / N
-num_epochs = 20
+num_epochs = 200
 learning_rate = 0.01
 
 # accountant creation
@@ -250,7 +250,7 @@ for epoch in range(1, num_epochs+1):
         print("Best alpha {}".format(best_alpha))
         print("eps for best alpha {:0.5f}".format(eps_till_now))
 
-    if epoch % 10 == 0:
+    if epoch % 20 == 0:
         eps_alpha_arr.append(eps_arr)
 
     epoch_average_gn /= N
@@ -275,6 +275,7 @@ fig, axs = plt.subplots(2, 2)
 # Plot 1 - epochs vs average_grad_norm
 x = np.arange(1, num_epochs+1)
 axs[0, 0].plot(x, epoch_avg_gn_arr)
+axs[0, 0].set_xticks(np.arange(0, num_epochs+1, 5))
 axs[0, 0].set_title('Epochs vs avg gradient norm')
 axs[0, 0].set_xlabel('Epochs')
 axs[0, 0].set_ylabel('Gradient norm')
@@ -287,25 +288,19 @@ axs[0, 1].set_xlabel('Iterations')
 axs[0, 1].set_ylabel('eps')
 
 # Plot 3 - alphas vs eps spent (plotted for every 10th iteration)
-lineObjects = axs[1, 0].plot(alphas, *eps_alpha_arr)
+for i in range(len(eps_alpha_arr)):
+    axs[1, 0].plot(alphas, eps_alpha_arr[i], label='epoch '+str((i+1)*10))
 axs[1, 0].set_title('alphas vs eps (for each alpha)')
+axs[1, 0].set_xticks(np.arange(0, len(alphas)+1, 5))
 axs[1, 0].set_xlabel('alphas')
 axs[1, 0].set_ylabel('eps')
-axs[1, 0].legend(iter(lineObjects), ('epoch 10', 
-                                     'epoch 20'))
-                                     # 'epoch 30', 
-                                     # 'epoch 40', 
-                                     # 'epoch 50',
-                                     # 'epoch 60', 
-                                     # 'epoch 70', 
-                                     # 'epoch 80', 
-                                     # 'epoch 90', 
-                                     # 'epoch 100'))
+axs[1, 0].legend()
 
 # Plot 4 - epochs vs best alpha
 x = np.arange(1, num_epochs+1)
 axs[1, 1].plot(x, best_alpha_arr)
 axs[1, 1].set_title('epochs vs best alpha')
+axs[1, 1].set_xticks(np.arange(0, num_epochs+1, 5))
 axs[1, 1].set_xlabel('epochs')
 axs[1, 1].set_ylabel('alpha (best)')
 
