@@ -52,7 +52,7 @@ def compute_test_accuracy(model, params, test_loader):
     total = 0
     for (inputs, targets) in test_loader:
         inputs = jnp.array(inputs)
-        targets = jnp.array(targets)  
+        targets = jnp.array(targets)
         predicted_class = jnp.argmax(model(params, inputs), axis=1)
     
         correct += jnp.sum(predicted_class == targets)
@@ -136,19 +136,19 @@ batch_size = 128 # also lot size
 N = 60000 # total dataset size (for MNIST)
 delta = 1/N
 sample_rate = batch_size / N
-num_epochs = 200
+num_epochs = 100
 learning_rate = 0.01
 
 # accountant creation
-accountant = create_accountant("rdp")
+# accountant = create_accountant("rdp")
 std_dev = 1.0
 l2_norm_bound = 1.0 # is equal to C in DPSGD paper
 noise_multiplier = std_dev / l2_norm_bound
 step_size = 1e-3
 
 # alphas for RDP
-alphas = range(2,33)
-# alphas = [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
+# alphas = range(2,33)
+alphas = [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
 
 # MNIST
 _MNIST_MEAN = [0.1307]
@@ -297,48 +297,66 @@ for epoch in range(1, num_epochs+1):
 #------------
 # Plotting
 #------------
-font = {'weight' : 'bold',
-        'size'   : 20}
-
 import matplotlib
-matplotlib.rc('font', **font)
 
-fig, axs = plt.subplots(2, 2)
+SMALL_SIZE = 8
+MEDIUM_SIZE = 10
+BIGGER_SIZE = 17
+
+matplotlib.rc('font', size=BIGGER_SIZE)          # controls default text sizes
+matplotlib.rc('axes', titlesize=BIGGER_SIZE)     # fontsize of the axes title
+matplotlib.rc('axes', labelsize=BIGGER_SIZE)    # fontsize of the x and y labels
+matplotlib.rc('xtick', labelsize=BIGGER_SIZE)    # fontsize of the tick labels
+matplotlib.rc('ytick', labelsize=BIGGER_SIZE)    # fontsize of the tick labels
+matplotlib.rc('legend', fontsize=BIGGER_SIZE)    # legend fontsize
+matplotlib.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
+
+# font = {'weight' : 'bold',
+#         'size'   : 30}
+# matplotlib.rc('font', **font)
+
+fig, axs = plt.subplots(2, 2,figsize=(14,14))
 
 # Plot 1 - epochs vs average_grad_norm
 x = np.arange(1, num_epochs+1)
 axs[0, 0].plot(x, epoch_avg_gn_arr)
-axs[0, 0].set_xticks(np.arange(0, num_epochs+1, 5))
+axs[0, 0].set_xticks(np.arange(0, num_epochs+1, 20))
 axs[0, 0].set_title('Epochs vs avg gradient norm')
-axs[0, 0].set_xlabel('Epochs')
-axs[0, 0].set_ylabel('Gradient norm')
+axs[0, 0].set_xlabel('Epochs \n (i)')
+axs[0, 0].set_ylabel('Gradient norm ($L_{2}$)')
 
 # Plot 2 - iterations vs eps spent (for best alpha)
 x = np.arange(len(eps_spent_arr))
 axs[0, 1].plot(x, eps_spent_arr)
-axs[0, 1].set_title('Iterations vs eps spent (for best alpha)')
-axs[0, 1].set_xlabel('Iterations')
-axs[0, 1].set_ylabel('eps')
+axs[1, 0].set_xticks(np.arange(0, len(x), 2000))
+axs[0, 1].set_title('Iterations vs eps (for best alpha)')
+axs[0, 1].set_xlabel('Iterations \n (ii)')
+axs[0, 1].set_ylabel('$\epsilon$\t', rotation=0)
 
 # Plot 3 - alphas vs eps spent (plotted for every 10th iteration)
 for i in range(len(eps_alpha_arr)):
     axs[1, 0].plot(alphas, eps_alpha_arr[i], label='epoch '+str((i+1)*20))
 axs[1, 0].set_title('alphas vs eps (for each alpha)')
-axs[1, 0].set_xticks(np.arange(0, len(alphas)+1, 5))
-axs[1, 0].set_xlabel('alphas')
-axs[1, 0].set_ylabel('eps')
+axs[1, 0].set_xticks(np.arange(0, np.max(alphas)+5, 5))
+axs[1, 0].set_xlabel('alphas \n (iii)')
+axs[1, 0].set_ylabel('$\epsilon$\t', rotation=0)
 axs[1, 0].legend()
 
 # Plot 4 - epochs vs best alpha
 x = np.arange(1, num_epochs+1)
 axs[1, 1].plot(x, best_alpha_arr)
 axs[1, 1].set_title('epochs vs best alpha')
-axs[1, 1].set_xticks(np.arange(0, num_epochs+1, 5))
-axs[1, 1].set_xlabel('epochs')
+axs[1, 1].set_xticks(np.arange(0, num_epochs+1, 20))
+axs[1, 1].set_xlabel('epochs \n (iv)')
 axs[1, 1].set_ylabel('alpha (best)')
 
 # save the plot
+# set the spacing between subplots
+fig.subplots_adjust(left=0.1,
+                    bottom=0.1, 
+                    right=0.9, 
+                    top=0.9, 
+                    wspace=1.0, 
+                    hspace=1.0)
 fig.tight_layout()
-fig.set_figheight(13)
-fig.set_figwidth(13)
 fig.savefig(os.path.join("plots", "all_plots.png"))
