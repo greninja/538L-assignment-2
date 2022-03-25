@@ -28,7 +28,6 @@ from typing import List, Tuple, Union
 import matplotlib.pyplot as plt 
 import seaborn as sns
 sns.set_theme()
-# sns.set_theme(style="whitegrid", palette="pastel")
 
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
@@ -141,7 +140,7 @@ num_epochs = 200
 learning_rate = 0.01
 
 # accountant creation
-# accountant = create_accountant("rdp")
+accountant = create_accountant("rdp")
 std_dev = 1.0
 l2_norm_bound = 1.0 # is equal to C in DPSGD paper
 noise_multiplier = std_dev / l2_norm_bound
@@ -192,7 +191,7 @@ init_fun, model = stax.serial(Conv(32, (5, 5), (2, 2), padding="SAME"),
 # batch dim is set to 1 since we'll be passing an example at a time to get per-example gradients 
 _, params = init_fun(key, (1, 1, 28, 28))
 
-opt_init, opt_update, get_params = optimizers.sgd(step_size) # changed from "adam" to "sgd"
+opt_init, opt_update, get_params = optimizers.adam(step_size) # "sgd" or "adam"
 opt_state = opt_init(params)
 
 # Get the initial set of parameters
@@ -204,10 +203,11 @@ eps_spent_arr = []
 epoch_avg_gn_arr = []
 eps_alpha_arr = []
 best_alpha_arr = []
+history = []
 
 jitted_update_step = jit(dpsgd_update_step)
 
-rdp = np.zeros_like(alphas, dtype=float)
+# rdp = np.zeros_like(alphas, dtype=float)
 
 # Main loop
 for epoch in range(1, num_epochs+1):
@@ -230,25 +230,58 @@ for epoch in range(1, num_epochs+1):
 
         # # take a step for acountant and measure privacy spent
         # accountant.step(noise_multiplier=noise_multiplier, sample_rate=sample_rate)
-        # eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta)
-        # eps_arr.append(eps_till_now)
+        # eps_till_now, best_alpha = accountant.get_privacy_spent(delta=delta, alphas=alphas)
+        # eps_spent_arr.append(eps_till_now)
+
+        # print("iteration {}, eps spent till now {}".format(i, eps_till_now))
 
         # manual privacy accounting
-        rdp += privacy_analysis.compute_rdp(q=sample_rate, 
-                                            noise_multiplier=noise_multiplier,
-                                            steps=i,
-                                            orders=alphas)
+        if len(history) >= 1:
+            last_noise_multiplier, last_sample_rate, num_steps = history.pop()
+            if (
+                last_noise_multiplier == noise_multiplier
+                and last_sample_rate == sample_rate
+            ):
+                history.append(
+                    (last_noise_multiplier, last_sample_rate, num_steps + 1)
+                )
+            else:
+                history.append(
+                    (last_noise_multiplier, last_sample_rate, num_steps)
+                )
+                history.append((noise_multiplier, sample_rate, 1))
+
+        else:
+            history.append((noise_multiplier, sample_rate, 1))
+
+        # rdp += privacy_analysis.compute_rdp(q=sample_rate,
+        #                         noise_multiplier=noise_multiplier,
+        #                         steps=i,
+        #                         orders=alphas)
+
+        rdp = sum(
+            [
+                privacy_analysis.compute_rdp(
+                    q=sample_rate,
+                    noise_multiplier=noise_multiplier,
+                    steps=num_steps,
+                    orders=alphas,
+                )
+                for (noise_multiplier, sample_rate, num_steps) in history
+            ]
+        )
 
         eps_arr, idx_opt = get_privacy_spent_for_every_alpha(orders=alphas,
                                                              rdp=rdp,
                                                              delta=delta)
 
-        best_alpha = alphas[idx_opt]
-        eps_till_now = eps_arr[idx_opt]
+
+        best_alpha = float(alphas[idx_opt])
+        eps_till_now = float(eps_arr[idx_opt])
         eps_spent_arr.append(eps_till_now)
 
         print("Best alpha {}".format(best_alpha))
-        print("eps for best alpha {:0.5f}".format(eps_till_now))
+        print("eps spent till now (for best alpha) {:0.5f}".format(eps_till_now))
 
     if epoch % 20 == 0:
         eps_alpha_arr.append(eps_arr)
@@ -259,7 +292,7 @@ for epoch in range(1, num_epochs+1):
 
     epoch_test_accuracy = compute_test_accuracy(model, params, test_loader)
     print("Epoch {} | eps spent till now {:0.5f} | epoch grad norm {:0.3f} | test accuracy {:0.2f}".format(
-           epoch, eps_till_now, epoch_average_gn, epoch_test_accuracy))    
+           epoch, eps_till_now, epoch_average_gn, epoch_test_accuracy))
 
 #------------
 # Plotting
@@ -289,7 +322,7 @@ axs[0, 1].set_ylabel('eps')
 
 # Plot 3 - alphas vs eps spent (plotted for every 10th iteration)
 for i in range(len(eps_alpha_arr)):
-    axs[1, 0].plot(alphas, eps_alpha_arr[i], label='epoch '+str((i+1)*10))
+    axs[1, 0].plot(alphas, eps_alpha_arr[i], label='epoch '+str((i+1)*20))
 axs[1, 0].set_title('alphas vs eps (for each alpha)')
 axs[1, 0].set_xticks(np.arange(0, len(alphas)+1, 5))
 axs[1, 0].set_xlabel('alphas')
